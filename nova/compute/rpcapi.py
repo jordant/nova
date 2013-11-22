@@ -256,6 +256,8 @@ class ComputeAPI(object):
         3.27 - Make run_instance() accept a new-world object
         3.28 - Update get_console_output() to accept a new-world object
         3.29 - Make check_instance_shared_storage accept a new-world object
+        3.30 - Add destroy_disks and migrate_data optional parameters to
+               rollback_live_migration_at_destination()
     '''
 
     VERSION_ALIASES = {
@@ -286,6 +288,13 @@ class ComputeAPI(object):
         if not self.client.can_send_version(current):
             return havana_compat
         return current
+
+    def _check_live_migration_api_version(self, server):
+        # NOTE(angdraug): live migration involving a compute host running Nova
+        # API older than v3.30 as either source or destination can cause
+        # instance disks to be deleted from shared storage
+        if not self.client.can_send_version('3.30'):
+            raise exception.LiveMigrationWithOldNovaNotSafe(server=server)
 
     def add_aggregate_host(self, ctxt, aggregate, host_param, host,
                            slave_info=None):
@@ -367,6 +376,7 @@ class ComputeAPI(object):
 
     def check_can_live_migrate_destination(self, ctxt, instance, destination,
                                            block_migration, disk_over_commit):
+        self._check_live_migration_api_version(destination)
         # NOTE(russellb) Havana compat
         version = self._get_compat_version('3.0', '2.38')
         cctxt = self.client.prepare(server=destination, version=version)
@@ -376,10 +386,11 @@ class ComputeAPI(object):
                           disk_over_commit=disk_over_commit)
 
     def check_can_live_migrate_source(self, ctxt, instance, dest_check_data):
+        source = _compute_host(None, instance)
+        self._check_live_migration_api_version(source)
         # NOTE(russellb) Havana compat
         version = self._get_compat_version('3.0', '2.38')
-        cctxt = self.client.prepare(server=_compute_host(None, instance),
-                version=version)
+        cctxt = self.client.prepare(server=source, version=version)
         return cctxt.call(ctxt, 'check_can_live_migrate_source',
                           instance=instance,
                           dest_check_data=dest_check_data)
@@ -766,16 +777,23 @@ class ComputeAPI(object):
                    instance=instance, migration=migration,
                    reservations=reservations)
 
-    def rollback_live_migration_at_destination(self, ctxt, instance, host):
-        if self.client.can_send_version('3.26'):
+    def rollback_live_migration_at_destination(self, ctxt, instance, host,
+                                               destroy_disks=True,
+                                               migrate_data=None):
+        msg_kwargs = {'instance': instance}
+        if self.client.can_send_version('3.30'):
+            version = '3.30'
+            msg_kwargs.update(destroy_disks=destroy_disks,
+                              migrate_data=migrate_data)
+        elif self.client.can_send_version('3.26'):
             version = '3.26'
         else:
             # NOTE(russellb) Havana compat
             version = self._get_compat_version('3.0', '2.0')
-            instance = jsonutils.to_primitive(instance)
+            msg_kwargs['instance'] = jsonutils.to_primitive(instance)
         cctxt = self.client.prepare(server=host, version=version)
         cctxt.cast(ctxt, 'rollback_live_migration_at_destination',
-                   instance=instance)
+                   **msg_kwargs)
 
     # NOTE(alaski): Remove this method when the scheduler rpc interface is
     # bumped to 4.x as the only callers of this method will be removed.

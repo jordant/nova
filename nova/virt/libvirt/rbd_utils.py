@@ -19,6 +19,7 @@ except ImportError:
     rbd = None
 
 from nova.openstack.common.gettextutils import _
+from nova.openstack.common.gettextutils import _LW
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova import utils
@@ -58,6 +59,19 @@ class RBDVolumeProxy(object):
 
     def __getattr__(self, attrib):
         return getattr(self.volume, attrib)
+
+
+class RADOSClient(object):
+    """Context manager to simplify error handling for connecting to ceph."""
+    def __init__(self, driver, pool=None):
+        self.driver = driver
+        self.cluster, self.ioctx = driver._connect_to_rados(pool)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type_, value, traceback):
+        self.driver._disconnect_from_rados(self.cluster, self.ioctx)
 
 
 class RBDDriver(object):
@@ -141,3 +155,18 @@ class RBDDriver(object):
                 return True
         except rbd.ImageNotFound:
             return False
+
+    def cleanup_volumes(self, instance):
+        with RADOSClient(self, self.pool) as client:
+
+            def belongs_to_instance(disk):
+                return disk.startswith(instance['uuid'])
+
+            volumes = rbd.RBD().list(client.ioctx)
+            for volume in filter(belongs_to_instance, volumes):
+                try:
+                    rbd.RBD().remove(client.ioctx, volume)
+                except (rbd.ImageNotFound, rbd.ImageHasSnapshots):
+                    LOG.warn(_LW('rbd remove %(volume)s in pool %(pool)s '
+                                 'failed'),
+                             {'volume': volume, 'pool': self.pool})

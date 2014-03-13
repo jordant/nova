@@ -564,7 +564,7 @@ class Rbd(Image):
         if self.driver.supports_layering():
             args += ['--new-format']
         args += self.driver.ceph_args()
-        libvirt_utils.import_rbd_image(*args)
+        utils.execute('rbd', 'import', *args)
 
         base_size = disk.get_disk_size(base)
 

@@ -61,6 +61,17 @@ def convert_image(source, dest, out_format, run_as_root=False):
     utils.execute(*cmd, run_as_root=run_as_root)
 
 
+def get_meta(context, image_href):
+    """Get image metadata and locations."""
+    # NOTE(angdraug): keep consistent with fetch()
+    (image_service, image_id) = glance.get_remote_image_service(context,
+                                                                image_href)
+    meta = image_service.show(context, image_id)
+    client = image_service._client
+    locations = glance._get_locations(client, context, image_id)
+    return (meta, locations)
+
+
 def fetch(context, image_href, path, _user_id, _project_id, max_size=0):
     # TODO(vish): Improve context handling and add owner and auth data
     #             when it is added to glance.  Right now there is no
@@ -72,7 +83,14 @@ def fetch(context, image_href, path, _user_id, _project_id, max_size=0):
         image_service.download(context, image_id, dst_path=path)
 
 
-def fetch_to_raw(context, image_href, path, user_id, project_id, max_size=0):
+def fetch_to_raw(context, image_href, path, user_id, project_id, max_size=0,
+                 backend=None):
+    if backend and hasattr(backend, 'direct_fetch'):
+        try:
+            return backend.direct_fetch(context, image_href)
+        except exception.ImageUnacceptable:
+            LOG.debug('could not fetch directly, falling back to download')
+
     path_tmp = "%s.part" % path
     fetch(context, image_href, path_tmp, user_id, project_id,
           max_size=max_size)

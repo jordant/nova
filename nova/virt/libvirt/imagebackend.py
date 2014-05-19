@@ -197,8 +197,7 @@ class Image(object):
                                            'path': self.path})
         return can_fallocate
 
-    @staticmethod
-    def verify_base_size(base, size, base_size=0):
+    def verify_base_size(self, base, size, base_size=0):
         """Check that the base image is not larger than size.
            Since images can't be generally shrunk, enforce this
            constraint taking account of virtual image size.
@@ -217,7 +216,7 @@ class Image(object):
             return
 
         if size and not base_size:
-            base_size = disk.get_disk_size(base)
+            base_size = self.get_disk_size(base)
 
         if size < base_size:
             msg = _('%(base)s virtual size %(base_size)s '
@@ -226,6 +225,9 @@ class Image(object):
                               'base_size': base_size,
                               'size': size})
             raise exception.FlavorDiskTooSmall()
+
+    def get_disk_size(self, name):
+        disk.get_disk_size(name)
 
     def snapshot_extract(self, target, out_format):
         raise NotImplementedError()
@@ -294,6 +296,14 @@ class Image(object):
     def is_shared_block_storage(self):
         """True if the backend puts images on a shared block storage."""
         return False
+
+    def direct_fetch(self, context, image_href):
+        """Create an image from a direct image location.
+
+        :raises: exception.ImageUnacceptable if it cannot be fetched directly
+        """
+        reason = _('direct_fetch() is not implemented')
+        raise exception.ImageUnacceptable(image_id=image_href, reason=reason)
 
 
 class Raw(Image):
@@ -525,7 +535,7 @@ class Rbd(Image):
         info = vconfig.LibvirtConfigGuestDisk()
 
         hosts, ports = self.driver.get_mon_addrs()
-        info.device_type = device_type
+        info.source_device = device_type
         info.driver_format = 'raw'
         info.driver_cache = cache_mode
         info.target_bus = disk_bus
@@ -552,23 +562,33 @@ class Rbd(Image):
     def check_image_exists(self):
         return self.driver.exists(self.rbd_name)
 
+    def get_disk_size(self, name):
+        """Returns the size of the virtual disk in bytes.
+
+        The name argument is ignored since this backend already knows
+        its name, and callers may pass a non-existent local file path.
+        """
+        return self.driver.size(self.rbd_name)
+
     def create_image(self, prepare_template, base, size, *args, **kwargs):
-        if not os.path.exists(base):
+
+        if not self.check_image_exists():
             prepare_template(target=base, max_size=size, *args, **kwargs)
         else:
             self.verify_base_size(base, size)
 
-        # keep using the command line import instead of librbd since it
-        # detects zeroes to preserve sparseness in the image
-        args = ['--pool', self.pool, base, self.rbd_name]
-        if self.driver.supports_layering():
-            args += ['--new-format']
-        args += self.driver.ceph_args()
-        utils.execute('rbd', 'import', *args)
+        # prepare_template() may have cloned the image into a new rbd
+        # image already instead of downloading it locally
+        if not self.check_image_exists():
+            # keep using the command line import instead of librbd since it
+            # detects zeroes to preserve sparseness in the image
+            args = ['--pool', self.pool, base, self.rbd_name]
+            if self.driver.supports_layering():
+                args += ['--new-format']
+                args += self.driver.ceph_args()
+                utils.execute('rbd', 'import', *args)
 
-        base_size = disk.get_disk_size(base)
-
-        if size and size > base_size:
+        if size and size > self.get_disk_size(self.rbd_name):
             self.driver.resize(self.rbd_name, size)
 
     def snapshot_extract(self, target, out_format):
@@ -577,6 +597,27 @@ class Rbd(Image):
     @property
     def is_shared_block_storage(self):
         return True
+
+    def direct_fetch(self, context, image_href):
+        if not self.driver.supports_layering():
+            reason = _('installed version of librbd does not support cloning')
+            raise exception.ImageUnacceptable(image_id=image_href,
+                                              reason=reason)
+
+        image_meta, locations = images.get_meta(context, image_href)
+        LOG.debug('Image locations are: %(locs)s' % {'locs': locations})
+
+        if image_meta.get('disk_format') not in ['raw', 'iso']:
+            reason = _('Image is not raw format')
+            raise exception.ImageUnacceptable(image_id=image_href,
+                                              reason=reason)
+
+        for location in locations:
+            if self.driver.is_cloneable(location, image_meta):
+                return self.driver.clone(location, self.rbd_name)
+
+        reason = _('No image locations are accessible')
+        raise exception.ImageUnacceptable(image_id=image_href, reason=reason)
 
 
 class Backend(object):

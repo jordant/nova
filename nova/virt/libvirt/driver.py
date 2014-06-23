@@ -1035,12 +1035,15 @@ class LibvirtDriver(driver.ComputeDriver):
             if CONF.libvirt.images_type == 'rbd':
                 self._cleanup_rbd(instance)
 
-    def _cleanup_rbd(self, instance):
+    @staticmethod
+    def _get_rbd_driver():
         driver = rbd_utils.RBDDriver(
                 pool=CONF.libvirt.images_rbd_pool,
                 ceph_conf=CONF.libvirt.images_rbd_ceph_conf,
                 rbd_user=CONF.libvirt.rbd_user)
-        driver.cleanup_volumes(instance)
+
+    def _cleanup_rbd(self, instance):
+        self._get_rbd_driver().cleanup_volumes(instance)
 
     def _cleanup_lvm(self, instance):
         """Delete all LVM disks for given instance object."""
@@ -3797,6 +3800,8 @@ class LibvirtDriver(driver.ComputeDriver):
         if CONF.libvirt.images_type == 'lvm':
             info = lvm.get_volume_group_info(
                                CONF.libvirt.images_volume_group)
+        elif CONF.libvirt.images_type == 'rbd':
+            info = self._get_rbd_driver().get_pool_info()
         else:
             info = libvirt_utils.get_fs_info(CONF.instances_path)
 

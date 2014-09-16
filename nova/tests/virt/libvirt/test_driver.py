@@ -22,6 +22,7 @@ import os
 import random
 import re
 import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -10371,6 +10372,25 @@ Active:          8381604 kB
                           lambda x: x,
                           lambda x: x)
 
+    def test_check_instance_shared_storage_local(self):
+        self.flags(images_type='raw', group='libvirt')
+        self.flags(instances_path='/tmp')
+        path = tempfile.mkdtemp(dir='/tmp')
+        driver = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        instance = objects.Instance(id=1,
+                                    uuid=os.path.split(path)[1])
+        temp_file = driver.check_instance_shared_storage_local(self.context,
+                                                               instance)
+        self.assertIsNotNone(temp_file['filename'])
+
+    def test_check_instance_shared_storage_local_rbd(self):
+        CONF.set_override('images_type', 'rbd', 'libvirt')
+        driver = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        instance = objects.Instance(id=1, uuid='fake-uuid')
+        self.assertIsNone(driver.
+                          check_instance_shared_storage_local(self.context,
+                                                              instance))
+
 
 class HostStateTestCase(test.NoDBTestCase):
 
@@ -11724,6 +11744,17 @@ class LibvirtDriverTestCase(test.NoDBTestCase):
         self._assert_on_id_map(idmaps[1],
                                vconfig.LibvirtConfigGuestGIDMap,
                                1, 20000, 10)
+
+    def test_instance_on_disk(self):
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        instance = objects.Instance(uuid='fake-uuid', id=1)
+        self.assertFalse(conn.instance_on_disk(instance))
+
+    def test_instance_on_disk_rbd(self):
+        self.flags(images_type='rbd', group='libvirt')
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        instance = objects.Instance(uuid='fake-uuid', id=1)
+        self.assertTrue(conn.instance_on_disk(instance))
 
 
 class LibvirtVolumeUsageTestCase(test.NoDBTestCase):

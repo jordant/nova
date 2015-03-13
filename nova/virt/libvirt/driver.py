@@ -4957,6 +4957,12 @@ class LibvirtDriver(driver.ComputeDriver):
         #             same, or we create a file on the dest system via SSH
         #             and check whether the source system can also see it.
         shared_storage = (dest == self.get_host_ip_addr())
+
+        # if we are using rbd for images, then we are always using shared
+        # storage.
+        if CONF.libvirt.images_type == 'rbd':
+            shared_storage = True
+
         if not shared_storage:
             tmp_file = uuid.uuid4().hex + '.tmp'
             tmp_path = os.path.join(inst_base, tmp_file)
